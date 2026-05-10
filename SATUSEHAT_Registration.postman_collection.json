@@ -1,0 +1,207 @@
+{
+  "info": {
+    "_postman_id": "satusehat-registration-flow",
+    "name": "SATUSEHAT Patient Registration Flow",
+    "description": "Koleksi request untuk simulasi pendaftaran pasien ke SATUSEHAT Platform (Sandbox).\n\nJalankan request secara berurutan: Step 1 → 2a → 2b → 3 → 4.\nAtau gunakan 'Run Full Flow' untuk menjalankan semuanya sekaligus.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "patient_ihs_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "practitioner_ihs_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "location_id",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Step 1 - Get Access Token",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/registration/token",
+          "host": ["{{base_url}}"],
+          "path": ["registration", "token"]
+        },
+        "description": "Mendapatkan OAuth2 access token dari SATUSEHAT Sandbox.\nToken di-cache secara otomatis di backend."
+      },
+      "response": []
+    },
+    {
+      "name": "Step 2a - Get Patient IHS by NIK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var json = pm.response.json();",
+              "if (json.patient_ihs_id) {",
+              "  pm.collectionVariables.set('patient_ihs_id', json.patient_ihs_id);",
+              "  console.log('Patient IHS ID saved:', json.patient_ihs_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/registration/patient-ihs?nik=1000000000000001",
+          "host": ["{{base_url}}"],
+          "path": ["registration", "patient-ihs"],
+          "query": [
+            {
+              "key": "nik",
+              "value": "1000000000000001"
+            }
+          ]
+        },
+        "description": "Mencari IHS Number pasien berdasarkan NIK dummy.\nHasil patient_ihs_id akan disimpan otomatis ke collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "Step 2b - Get Practitioner IHS by NIK",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var json = pm.response.json();",
+              "if (json.practitioner_ihs_id) {",
+              "  pm.collectionVariables.set('practitioner_ihs_id', json.practitioner_ihs_id);",
+              "  console.log('Practitioner IHS ID saved:', json.practitioner_ihs_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/registration/practitioner-ihs?nik=1000000000000002",
+          "host": ["{{base_url}}"],
+          "path": ["registration", "practitioner-ihs"],
+          "query": [
+            {
+              "key": "nik",
+              "value": "1000000000000002"
+            }
+          ]
+        },
+        "description": "Mencari IHS Number dokter/practitioner berdasarkan NIK dummy.\nHasil practitioner_ihs_id akan disimpan otomatis ke collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "Step 3 - Create Location",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "var json = pm.response.json();",
+              "if (json.location_id) {",
+              "  pm.collectionVariables.set('location_id', json.location_id);",
+              "  console.log('Location ID saved:', json.location_id);",
+              "}"
+            ],
+            "type": "text/javascript"
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/registration/location?location_name=Ruang%20Poli%20Umum",
+          "host": ["{{base_url}}"],
+          "path": ["registration", "location"],
+          "query": [
+            {
+              "key": "location_name",
+              "value": "Ruang Poli Umum"
+            }
+          ]
+        },
+        "description": "Membuat resource Location (ruangan) di SATUSEHAT.\nHasil location_id akan disimpan otomatis ke collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "Step 4 - Create Encounter",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/registration/encounter?patient_ihs_id={{patient_ihs_id}}&practitioner_ihs_id={{practitioner_ihs_id}}&location_id={{location_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["registration", "encounter"],
+          "query": [
+            {
+              "key": "patient_ihs_id",
+              "value": "{{patient_ihs_id}}"
+            },
+            {
+              "key": "practitioner_ihs_id",
+              "value": "{{practitioner_ihs_id}}"
+            },
+            {
+              "key": "location_id",
+              "value": "{{location_id}}"
+            }
+          ]
+        },
+        "description": "Mendaftarkan kunjungan pasien (Encounter) ke SATUSEHAT.\nStatus: arrived | Kelas: AMB (Ambulatory/Rawat Jalan).\nMenggunakan ID dari step-step sebelumnya yang tersimpan di collection variable."
+      },
+      "response": []
+    },
+    {
+      "name": "[ALL-IN-ONE] Run Full Registration Flow",
+      "request": {
+        "method": "POST",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/registration/run-full-flow?nik_pasien=1000000000000001&nik_dokter=1000000000000002&location_name=Ruang%20Poli%20Umum",
+          "host": ["{{base_url}}"],
+          "path": ["registration", "run-full-flow"],
+          "query": [
+            {
+              "key": "nik_pasien",
+              "value": "1000000000000001"
+            },
+            {
+              "key": "nik_dokter",
+              "value": "1000000000000002"
+            },
+            {
+              "key": "location_name",
+              "value": "Ruang Poli Umum"
+            }
+          ]
+        },
+        "description": "Menjalankan SELURUH alur pendaftaran pasien dalam satu request.\nBerguna untuk testing end-to-end.\nRespons berisi ringkasan semua ID yang dihasilkan beserta Encounter ID."
+      },
+      "response": []
+    }
+  ]
+}
