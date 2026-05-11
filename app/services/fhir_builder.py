@@ -67,11 +67,26 @@ def build_encounter_payload(
     Returns:
         dict FHIR Encounter resource
     """
+    import uuid
     now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S+00:00")
 
     return {
         "resourceType": "Encounter",
+        "identifier": [
+            {
+                "system": f"http://sys-ids.kemkes.go.id/encounter/{org_id}",
+                "value": str(uuid.uuid4()),
+            }
+        ],
         "status": "arrived",
+        "statusHistory": [
+            {
+                "status": "arrived",
+                "period": {
+                    "start": now_utc,
+                },
+            }
+        ],
         "class": {
             "system": "http://terminology.hl7.org/CodeSystem/v3-ActCode",
             "code": "AMB",

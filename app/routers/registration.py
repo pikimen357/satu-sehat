@@ -17,9 +17,10 @@ from app.services.fhir_builder import build_location_payload, build_encounter_pa
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/registration", tags=["Pendaftaran Pasien"])
 
-# NIK dummy sesuai spesifikasi tugas
-NIK_PASIEN = "1000000000000001"
-NIK_DOKTER = "1000000000000002"
+# Data dummy sandbox SATUSEHAT
+NIK_PASIEN  = "9271060312000001"
+NIK_DOKTER  = "1000000000000002"   # NIK dokter (lookup by NIK)
+IHS_DOKTER  = "10006926841"        # IHS Number dokter dummy sandbox
 
 
 # ---------------------------------------------------------------------------
@@ -53,9 +54,12 @@ async def step1_get_token():
 async def step2a_get_patient_ihs(nik: str = NIK_PASIEN):
     """
     Mencari IHS Number pasien berdasarkan NIK.
-    Default menggunakan NIK dummy: 1000000000000001
+    Default NIK dummy sandbox: 9271060312000001
     """
-    result = await fhir_get("/Patient", params={"identifier": f"https://fhir.kemkes.go.id/id/nik|{nik}"})
+    result = await fhir_get(
+        "/Patient",
+        params={"identifier": f"https://fhir.kemkes.go.id/id/nik|{nik}"},
+    )
 
     entries = result.get("entry", [])
     if not entries:
@@ -79,8 +83,8 @@ async def step2a_get_patient_ihs(nik: str = NIK_PASIEN):
 @router.get("/practitioner-ihs", summary="Step 2b: Cari IHS Number Dokter by NIK")
 async def step2b_get_practitioner_ihs(nik: str = NIK_DOKTER):
     """
-    Mencari IHS Number practitioner (dokter/nakes) berdasarkan NIK.
-    Default menggunakan NIK dummy: 1000000000000002
+    Mencari IHS Number practitioner berdasarkan NIK.
+    Gunakan endpoint /practitioner-by-ihs jika hanya punya IHS Number.
     """
     result = await fhir_get(
         "/Practitioner",
@@ -103,6 +107,32 @@ async def step2b_get_practitioner_ihs(nik: str = NIK_DOKTER):
         "nik": nik,
         "practitioner_ihs_id": ihs_id,
         "practitioner_name": practitioner.get("name", [{}])[0].get("text", "-"),
+    }
+
+
+@router.get("/practitioner-by-ihs", summary="Step 2b (alt): Cari Dokter langsung by IHS Number")
+async def step2b_get_practitioner_by_ihs(ihs_id: str = IHS_DOKTER):
+    """
+    Mencari data practitioner langsung menggunakan IHS Number (bukan NIK).
+    Digunakan saat NIK dokter tidak diketahui, hanya IHS Number-nya.
+    Default IHS dummy sandbox: 10006926841
+    """
+    result = await fhir_get(f"/Practitioner/{ihs_id}")
+
+    if result.get("resourceType") != "Practitioner":
+        raise HTTPException(
+            status_code=404,
+            detail=f"Practitioner dengan IHS ID {ihs_id} tidak ditemukan.",
+        )
+
+    name_list = result.get("name", [{}])
+    name_text = name_list[0].get("text", "-") if name_list else "-"
+
+    return {
+        "step": "2b",
+        "status": "success",
+        "practitioner_ihs_id": result["id"],
+        "practitioner_name": name_text,
     }
 
 
@@ -157,9 +187,9 @@ async def step4_create_encounter(
     - timestamp: waktu saat request dijalankan (ISO 8601 UTC+0)
 
     Membutuhkan:
-    - patient_ihs_id: dari Step 2a
-    - practitioner_ihs_id: dari Step 2b
-    - location_id: dari Step 3
+    - patient_ihs_id     : dari Step 2a
+    - practitioner_ihs_id: dari Step 2b atau 2b-alt
+    - location_id        : dari Step 3
     """
     payload = build_encounter_payload(
         org_id=settings.satusehat_org_id,
@@ -196,14 +226,13 @@ async def step4_create_encounter(
 )
 async def run_full_registration_flow(
     nik_pasien: str = NIK_PASIEN,
-    nik_dokter: str = NIK_DOKTER,
+    ihs_dokter: str = IHS_DOKTER,
     location_name: str = "Ruang Poli Umum",
 ):
     """
     Menjalankan keseluruhan alur pendaftaran pasien secara berurutan:
-    1. Autentikasi → 2. Lookup IHS → 3. Buat Location → 4. Buat Encounter
-
-    Berguna untuk testing end-to-end dengan satu kali request.
+    1. Autentikasi → 2a. Lookup Patient by NIK → 2b. Lookup Practitioner by IHS
+    → 3. Buat Location → 4. Buat Encounter
     """
     results = {}
 
@@ -215,7 +244,7 @@ async def run_full_registration_flow(
     except ValueError as e:
         raise HTTPException(status_code=401, detail=f"[Step 1] {e}")
 
-    # Step 2a – Patient
+    # Step 2a – Patient by NIK
     logger.info("[Step 2a] Mencari IHS Number pasien NIK=%s", nik_pasien)
     patient_result = await fhir_get(
         "/Patient",
@@ -230,19 +259,15 @@ async def run_full_registration_flow(
     patient_ihs_id = entries[0]["resource"]["id"]
     results["step2a_patient"] = {"status": "success", "patient_ihs_id": patient_ihs_id}
 
-    # Step 2b – Practitioner
-    logger.info("[Step 2b] Mencari IHS Number dokter NIK=%s", nik_dokter)
-    prac_result = await fhir_get(
-        "/Practitioner",
-        params={"identifier": f"https://fhir.kemkes.go.id/id/nik|{nik_dokter}"},
-    )
-    prac_entries = prac_result.get("entry", [])
-    if not prac_entries:
+    # Step 2b – Practitioner by IHS Number
+    logger.info("[Step 2b] Mencari Practitioner IHS=%s", ihs_dokter)
+    prac_result = await fhir_get(f"/Practitioner/{ihs_dokter}")
+    if prac_result.get("resourceType") != "Practitioner":
         raise HTTPException(
             status_code=404,
-            detail=f"[Step 2b] Practitioner dengan NIK {nik_dokter} tidak ditemukan.",
+            detail=f"[Step 2b] Practitioner IHS {ihs_dokter} tidak ditemukan.",
         )
-    practitioner_ihs_id = prac_entries[0]["resource"]["id"]
+    practitioner_ihs_id = prac_result["id"]
     results["step2b_practitioner"] = {
         "status": "success",
         "practitioner_ihs_id": practitioner_ihs_id,
