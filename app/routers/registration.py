@@ -1,315 +1,195 @@
-"""
-Router untuk alur pendaftaran pasien SATUSEHAT.
-Mengimplementasikan 4 langkah berurutan:
-  1. Autentikasi (token)
-  2. Lookup IHS Number pasien & dokter by NIK
-  3. POST Location
-  4. POST Encounter
-"""
-
 import logging
-from fastapi import APIRouter, HTTPException
-from app.config import settings
-from app.services.auth import get_access_token
-from app.services.satusehat_client import fhir_get, fhir_post
-from app.services.fhir_builder import build_location_payload, build_encounter_payload
+from fastapi import APIRouter, HTTPException, Depends
+from app.models import (
+    TokenResponse, PatientIHSResponse, 
+    LocationRequest, LocationResponse, 
+    EncounterRequest, EncounterResponse, FullFlowResponse
+)
+from app.services.satusehat_service import SatuSehatService
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/registration", tags=["Pendaftaran Pasien"])
 
-# Data dummy sandbox SATUSEHAT
-NIK_PASIEN  = "9271060312000001"
-NIK_DOKTER  = "1000000000000002"   # NIK dokter (lookup by NIK)
-IHS_DOKTER  = "10006926841"        # IHS Number dokter dummy sandbox
+service = SatuSehatService()
 
+NIK_PASIEN_DUMMY = "9271060312000001"
+IHS_DOKTER_DUMMY = "10006926841"
 
 # ---------------------------------------------------------------------------
 # STEP 1 – Token
 # ---------------------------------------------------------------------------
 
-@router.get("/token", summary="Step 1: Dapatkan Access Token")
-async def step1_get_token():
+@router.get("/token", summary="Step 1: Dapatkan Access Token", response_model=TokenResponse)
+async def get_token():
     """
-    Mendapatkan OAuth2 access token dari server SATUSEHAT (Sandbox).
-    Token di-cache otomatis dan di-refresh saat kedaluwarsa.
+    Mendapatkan OAuth2 access token dari server SATUSEHAT.
     """
     try:
-        token = await get_access_token()
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=str(e))
-
-    return {
-        "step": 1,
-        "status": "success",
-        "message": "Access token berhasil didapatkan",
-        "access_token_preview": f"{token[:20]}...",
-    }
-
+        return service.get_token()
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {str(e)}")
 
 # ---------------------------------------------------------------------------
-# STEP 2 – Master Data: IHS Number Pasien & Dokter
+# STEP 2 – Master Data
 # ---------------------------------------------------------------------------
 
-@router.get("/patient-ihs", summary="Step 2a: Cari IHS Number Pasien by NIK")
-async def step2a_get_patient_ihs(nik: str = NIK_PASIEN):
+@router.get("/patient-ihs", summary="Step 2a: Cari IHS Number Pasien", response_model=PatientIHSResponse)
+async def get_patient_ihs(token: str, nik: str = NIK_PASIEN_DUMMY):
     """
     Mencari IHS Number pasien berdasarkan NIK.
-    Default NIK dummy sandbox: 9271060312000001
     """
-    result = await fhir_get(
-        "/Patient",
-        params={"identifier": f"https://fhir.kemkes.go.id/id/nik|{nik}"},
-    )
+    try:
+        patient_data = service.get_patient_ihs(token, nik)
+        # Transformasi FHIR Resource ke Simple Model
+        return {
+            "ihsNumber": patient_data["id"],
+            "nik": nik,
+            "fullName": patient_data.get("name", [{}])[0].get("text", "Unknown")
+        }
+    except HTTPException as e:
+        raise e
 
-    entries = result.get("entry", [])
-    if not entries:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Pasien dengan NIK {nik} tidak ditemukan di SATUSEHAT.",
-        )
-
-    patient = entries[0]["resource"]
-    ihs_id = patient["id"]
-
-    return {
-        "step": "2a",
-        "status": "success",
-        "nik": nik,
-        "patient_ihs_id": ihs_id,
-        "patient_name": patient.get("name", [{}])[0].get("text", "-"),
-    }
-
-
-@router.get("/practitioner-ihs", summary="Step 2b: Cari IHS Number Dokter by NIK")
-async def step2b_get_practitioner_ihs(nik: str = NIK_DOKTER):
+@router.get("/practitioner-ihs", summary="Step 2b: Cari IHS Number Dokter", response_model=PatientIHSResponse)
+async def get_practitioner_ihs(token: str, nik: str):
     """
-    Mencari IHS Number practitioner berdasarkan NIK.
-    Gunakan endpoint /practitioner-by-ihs jika hanya punya IHS Number.
+    Mencari IHS Number dokter berdasarkan NIK.
     """
-    result = await fhir_get(
-        "/Practitioner",
-        params={"identifier": f"https://fhir.kemkes.go.id/id/nik|{nik}"},
-    )
-
-    entries = result.get("entry", [])
-    if not entries:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Practitioner dengan NIK {nik} tidak ditemukan di SATUSEHAT.",
-        )
-
-    practitioner = entries[0]["resource"]
-    ihs_id = practitioner["id"]
-
-    return {
-        "step": "2b",
-        "status": "success",
-        "nik": nik,
-        "practitioner_ihs_id": ihs_id,
-        "practitioner_name": practitioner.get("name", [{}])[0].get("text", "-"),
-    }
-
-
-@router.get("/practitioner-by-ihs", summary="Step 2b (alt): Cari Dokter langsung by IHS Number")
-async def step2b_get_practitioner_by_ihs(ihs_id: str = IHS_DOKTER):
-    """
-    Mencari data practitioner langsung menggunakan IHS Number (bukan NIK).
-    Digunakan saat NIK dokter tidak diketahui, hanya IHS Number-nya.
-    Default IHS dummy sandbox: 10006926841
-    """
-    result = await fhir_get(f"/Practitioner/{ihs_id}")
-
-    if result.get("resourceType") != "Practitioner":
-        raise HTTPException(
-            status_code=404,
-            detail=f"Practitioner dengan IHS ID {ihs_id} tidak ditemukan.",
-        )
-
-    name_list = result.get("name", [{}])
-    name_text = name_list[0].get("text", "-") if name_list else "-"
-
-    return {
-        "step": "2b",
-        "status": "success",
-        "practitioner_ihs_id": result["id"],
-        "practitioner_name": name_text,
-    }
-
+    try:
+        # Menggunakan logic yang sama dengan patient lookup (karena sama-sama Resource FHIR)
+        # Catatan: Di produksi, endpoint-nya mungkin berbeda /Practitioner vs /Patient
+        prac_data = service.get_practitioner_ihs(token, nik)
+        return {
+            "ihsNumber": prac_data["id"],
+            "nik": nik,
+            "fullName": prac_data.get("name", [{}])[0].get("text", "Unknown")
+        }
+    except HTTPException as e:
+        raise e
 
 # ---------------------------------------------------------------------------
 # STEP 3 – POST Location
 # ---------------------------------------------------------------------------
 
-@router.post("/location", summary="Step 3: Buat Resource Location")
-async def step3_create_location(location_name: str = "Ruang Poli Umum"):
+@router.post("/location", summary="Step 3: Buat Resource Location", response_model=LocationResponse)
+async def create_location(token: str, payload: LocationRequest):
     """
-    Membuat resource Location (ruangan) yang terhubung dengan Organization fasyankes.
-    Mengembalikan Location ID untuk digunakan di langkah berikutnya.
+    Membuat resource Location berdasarkan request body.
     """
-    payload = build_location_payload(
-        org_id=settings.satusehat_org_id,
-        location_name=location_name,
-    )
-
-    result = await fhir_post("/Location", payload)
-    location_id = result.get("id")
-
-    if not location_id:
-        raise HTTPException(
-            status_code=500,
-            detail="Server SATUSEHAT tidak mengembalikan Location ID.",
-        )
-
-    return {
-        "step": 3,
-        "status": "success",
-        "message": f"Location '{location_name}' berhasil dibuat",
-        "location_id": location_id,
-        "fhir_response": result,
+    fhir_payload = {
+        "resourceType": "Location",
+        "active": True,
+        "name": payload.name,
+        "description": payload.description,
+        "category": [c.dict() for c in payload.category]
     }
-
+    
+    try:
+        result = service.create_location(token, fhir_payload)
+        return {
+            "id": result["id"],
+            "active": result.get("active", True),
+            "name": result.get("name", payload.name)
+        }
+    except HTTPException as e:
+        raise e
 
 # ---------------------------------------------------------------------------
 # STEP 4 – POST Encounter
 # ---------------------------------------------------------------------------
 
-@router.post("/encounter", summary="Step 4: Daftarkan Kunjungan Pasien (Encounter)")
-async def step4_create_encounter(
-    patient_ihs_id: str,
-    practitioner_ihs_id: str,
-    location_id: str,
-):
+@router.post("/encounter", summary="Step 4: Daftarkan Kunjungan (Encounter)", response_model=EncounterResponse)
+async def create_encounter(token: str, payload: EncounterRequest):
     """
-    Mendaftarkan kunjungan pasien (Encounter) ke SATUSEHAT.
-
-    - status: arrived (pasien baru tiba)
-    - class: AMB (Ambulatory / Rawat Jalan)
-    - timestamp: waktu saat request dijalankan (ISO 8601 UTC+0)
-
-    Membutuhkan:
-    - patient_ihs_id     : dari Step 2a
-    - practitioner_ihs_id: dari Step 2b atau 2b-alt
-    - location_id        : dari Step 3
+    Mendaftarkan kunjungan pasien ke SATUSEHAT.
     """
-    payload = build_encounter_payload(
-        org_id=settings.satusehat_org_id,
-        location_id=location_id,
-        patient_ihs_id=patient_ihs_id,
-        practitioner_ihs_id=practitioner_ihs_id,
-    )
-
-    result = await fhir_post("/Encounter", payload)
-    encounter_id = result.get("id")
-
-    if not encounter_id:
-        raise HTTPException(
-            status_code=500,
-            detail="Server SATUSEHAT tidak mengembalikan Encounter ID.",
-        )
-
-    return {
-        "step": 4,
-        "status": "success",
-        "message": "Encounter berhasil dibuat. Pasien terdaftar!",
-        "encounter_id": encounter_id,
-        "fhir_response": result,
-    }
-
-
-# ---------------------------------------------------------------------------
-# ALUR LENGKAP (all-in-one)
-# ---------------------------------------------------------------------------
-
-@router.post(
-    "/run-full-flow",
-    summary="[ALL-IN-ONE] Jalankan seluruh alur pendaftaran sekaligus",
-)
-async def run_full_registration_flow(
-    nik_pasien: str = NIK_PASIEN,
-    ihs_dokter: str = IHS_DOKTER,
-    location_name: str = "Ruang Poli Umum",
-):
-    """
-    Menjalankan keseluruhan alur pendaftaran pasien secara berurutan:
-    1. Autentikasi → 2a. Lookup Patient by NIK → 2b. Lookup Practitioner by IHS
-    → 3. Buat Location → 4. Buat Encounter
-    """
-    results = {}
-
-    # Step 1 – Token
-    logger.info("[Step 1] Mendapatkan access token...")
-    try:
-        token = await get_access_token()
-        results["step1_token"] = {"status": "success", "preview": f"{token[:20]}..."}
-    except ValueError as e:
-        raise HTTPException(status_code=401, detail=f"[Step 1] {e}")
-
-    # Step 2a – Patient by NIK
-    logger.info("[Step 2a] Mencari IHS Number pasien NIK=%s", nik_pasien)
-    patient_result = await fhir_get(
-        "/Patient",
-        params={"identifier": f"https://fhir.kemkes.go.id/id/nik|{nik_pasien}"},
-    )
-    entries = patient_result.get("entry", [])
-    if not entries:
-        raise HTTPException(
-            status_code=404,
-            detail=f"[Step 2a] Pasien dengan NIK {nik_pasien} tidak ditemukan.",
-        )
-    patient_ihs_id = entries[0]["resource"]["id"]
-    results["step2a_patient"] = {"status": "success", "patient_ihs_id": patient_ihs_id}
-
-    # Step 2b – Practitioner by IHS Number
-    logger.info("[Step 2b] Mencari Practitioner IHS=%s", ihs_dokter)
-    prac_result = await fhir_get(f"/Practitioner/{ihs_dokter}")
-    if prac_result.get("resourceType") != "Practitioner":
-        raise HTTPException(
-            status_code=404,
-            detail=f"[Step 2b] Practitioner IHS {ihs_dokter} tidak ditemukan.",
-        )
-    practitioner_ihs_id = prac_result["id"]
-    results["step2b_practitioner"] = {
-        "status": "success",
-        "practitioner_ihs_id": practitioner_ihs_id,
-    }
-
-    # Step 3 – Location
-    logger.info("[Step 3] Membuat Location: %s", location_name)
-    location_payload = build_location_payload(
-        org_id=settings.satusehat_org_id, location_name=location_name
-    )
-    location_result = await fhir_post("/Location", location_payload)
-    location_id = location_result.get("id")
-    if not location_id:
-        raise HTTPException(status_code=500, detail="[Step 3] Location ID tidak diterima.")
-    results["step3_location"] = {"status": "success", "location_id": location_id}
-
-    # Step 4 – Encounter
-    logger.info("[Step 4] Membuat Encounter...")
-    encounter_payload = build_encounter_payload(
-        org_id=settings.satusehat_org_id,
-        location_id=location_id,
-        patient_ihs_id=patient_ihs_id,
-        practitioner_ihs_id=practitioner_ihs_id,
-    )
-    encounter_result = await fhir_post("/Encounter", encounter_payload)
-    encounter_id = encounter_result.get("id")
-    if not encounter_id:
-        raise HTTPException(status_code=500, detail="[Step 4] Encounter ID tidak diterima.")
-    results["step4_encounter"] = {
-        "status": "success",
-        "encounter_id": encounter_id,
-        "fhir_response": encounter_result,
-    }
-
-    return {
-        "status": "success",
-        "message": "Seluruh alur pendaftaran berhasil dijalankan!",
-        "summary": {
-            "patient_ihs_id": patient_ihs_id,
-            "practitioner_ihs_id": practitioner_ihs_id,
-            "location_id": location_id,
-            "encounter_id": encounter_id,
+    # Sesuai rekomendasi FHIR SATUSEHAT
+    fhir_payload = {
+        "resourceType": "Encounter",
+        "status": "planned",
+        "class": {
+            "system": "http://terminology.hl7.org/CodeSystem/v3-ActClass",
+            "code": payload.encounter_class
         },
-        "detail": results,
+        "subject": { "reference": f"Patient/{payload.patient_ihs}" },
+        "participant": [{
+            "individual": { "reference": f"Practitioner/{payload.practitioner_ihs}" }
+        }],
+        "location": { "reference": f"Location/{payload.location_id}" },
+        "description": payload.description
     }
+    
+    try:
+        result = service.create_encounter(token, fhir_payload)
+        return {
+            "id": result["id"],
+            "status": result.get("status", "planned"),
+            "subject": {"reference": f"Patient/{payload.patient_ihs}"},
+            "period": result.get("period", {"start": "Not Set"})
+        }
+    except HTTPException as e:
+        raise e
+
+# ---------------------------------------------------------------------------
+# FULL FLOW 
+# ---------------------------------------------------------------------------
+
+@router.post("/run-full-flow", summary="[ALL-IN-ONE] Full Registration Flow", response_model=FullFlowResponse)
+async def run_full_registration_flow(
+    nik_pasien: str = NIK_PASIEN_DUMMY,
+    ihs_dokter: str = IHS_DOKTER_DUMMY,
+    location_name: str = "Ruang Poli Umum"
+):
+    """
+    Menjalankan seluruh alur pendaftaran menggunakan service yang sudah ada.
+    """
+    try:
+        # 1. Token
+        token_data = service.get_token()
+        token = token_data["access_token"]
+        
+        # 2a. Patient IHS
+        patient_res = service.get_patient_ihs(token, nik_pasien)
+        patient_ihs = patient_res["id"]
+        
+        # 2b. Practitioner IHS (Directly using IHS Number for flow)
+        # Kita asumsikan ihs_dokter adalah IHS Number valid
+        practitioner_ihs = ihs_dokter 
+        
+        # 3. Location
+        loc_fhir = {
+            "resourceType": "Location",
+            "active": True,
+            "name": location_name,
+            "category": [{"system": "http://terminology.hl7.org/CodeSystem/v3-Role.code", "code": "LOC"}]
+        }
+        loc_res = service.create_location(token, loc_fhir)
+        location_id = loc_res["id"]
+        
+        # 4. Encounter
+        enc_fhir = {
+            "resourceType": "Encounter",
+            "status": "planned",
+            "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActClass", "code": "AMB"},
+            "subject": {"reference": f"Patient/{patient_ihs}"},
+            "participant": [{"individual": {"reference": f"Practitioner/{practitioner_ihs}"}}],
+            "location": {"reference": f"Location/{location_id}"}
+        }
+        enc_res = service.create_encounter(token, enc_fhir)
+        
+        return {
+            "status": "success",
+            "message": "Full flow completed successfully",
+            "data": {
+                "patient_ihs": patient_ihs,
+                "location_id": location_id,
+                "encounter_id": enc_res["id"]
+            }
+        }
+        
+    except HTTPException as e:
+        raise e
+    except Exception as e:
+        logger.error(f"Full flow error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Flow failed: {str(e)}")
