@@ -1,0 +1,252 @@
+{
+  "v": 12,
+  "id": "cmpki1wbk6j72he1mv9v9xoq0",
+  "name": "SATUSEHAT Patient Registration Flow",
+  "folders": [],
+  "requests": [
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": null,
+        "contentType": null
+      },
+      "name": "Step 1 - Get Access Token",
+      "method": "GET",
+      "params": [],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/token",
+      "responses": {},
+      "testScript": "",
+      "description": "Mendapatkan OAuth2 access token dari SATUSEHAT Sandbox.\nToken di-cache secara otomatis di backend.",
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmpki1wbx6j74he1ml8pqsry5"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": null,
+        "contentType": null
+      },
+      "name": "Step 2a - Get Patient IHS by NIK",
+      "method": "GET",
+      "params": [
+        {
+          "key": "nik",
+          "value": "9271060312000001",
+          "active": true,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/patient-ihs",
+      "responses": {},
+      "testScript": "// Mengambil response body dalam bentuk JSON di Hoppscotch\r\nvar json = pw.response.body;\r\n\r\nif (json && json.patient_ihs_id) {\r\n    // Menyimpan nilai ke Environment Variable Hoppscotch\r\n    pw.env.set('patient_ihs_id', json.patient_ihs_id);\r\n    \r\n    // Menampilkan log di console Hoppscotch\r\n    console.log('Patient IHS ID saved to Environment:', json.patient_ihs_id);\r\n}",
+      "description": "Mencari IHS Number pasien berdasarkan NIK dummy.\nHasil patient_ihs_id akan disimpan otomatis ke collection variable.",
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmpki1wbx6j76he1m0j72zqme"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": null,
+        "contentType": null
+      },
+      "name": "Step 2b - Get Practitioner IHS by NIK",
+      "method": "GET",
+      "params": [
+        {
+          "key": "ihs_id",
+          "value": "10006926841",
+          "active": true,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/practitioner-by-ihs",
+      "responses": {},
+      "testScript": "// Mengambil response body dalam bentuk JSON di Hoppscotch\r\nvar json = pw.response.body;\r\n\r\nif (json && json.practitioner_ihs_id) {\r\n    // Menyimpan nilai ke Environment Variable Hoppscotch\r\n    pw.env.set('practitioner_ihs_id', json.practitioner_ihs_id);\r\n    \r\n    // Menampilkan log di console Hoppscotch\r\n    console.log('Practitioner IHS ID saved to Environment:', json.practitioner_ihs_id);\r\n}",
+      "description": "Mencari IHS Number dokter/practitioner berdasarkan NIK dummy.\nHasil practitioner_ihs_id akan disimpan otomatis ke collection variable.",
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmpki1wbx6j78he1mho79e0zm"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": "{\n  \"location_name\": \"Ruang Poli Umum zan 2\"\n}",
+        "contentType": "application/json"
+      },
+      "name": "Step 3 - Create Location",
+      "method": "POST",
+      "params": [
+        {
+          "key": "location_name",
+          "value": "Ruang Poli Umum zan 2",
+          "active": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/location",
+      "responses": {},
+      "testScript": "// Mengambil response body dalam bentuk JSON di Hoppscotch\r\nvar json = pw.response.body;\r\n\r\nif (json && json.location_id) {\r\n    // Menyimpan nilai ke Environment Variable Hoppscotch\r\n    pw.env.set('location_id', json.location_id);\r\n    \r\n    // Menampilkan log di console Hoppscotch\r\n    console.log('Location ID saved to Environment:', json.location_id);\r\n}",
+      "description": "Membuat resource Location (ruangan) di SATUSEHAT.\nHasil location_id akan disimpan otomatis ke collection variable.",
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmpki1wbx6j7ahe1m4zwxdbrg"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": "{\n  \"patient_ihs_id\" : \"P02478375538\", \n  \"practitioner_ihs_id\" :\"10006926841\", \n  \"location_id\" : \"2b86a88a-2777-42a2-8371-6947c4029109\"\n}",
+        "contentType": "application/json"
+      },
+      "name": "Step 4 - Create Encounter",
+      "method": "POST",
+      "params": [
+        {
+          "key": "patient_ihs_id",
+          "value": "<<patient_ihs_id>>",
+          "active": false,
+          "description": ""
+        },
+        {
+          "key": "practitioner_ihs_id",
+          "value": "<<practitioner_ihs_id>>",
+          "active": false,
+          "description": ""
+        },
+        {
+          "key": "location_id",
+          "value": "<<location_id>>",
+          "active": false,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/encounter",
+      "responses": {},
+      "testScript": "",
+      "description": "Mendaftarkan kunjungan pasien (Encounter) ke SATUSEHAT.\nStatus: arrived | Kelas: AMB (Ambulatory/Rawat Jalan).\nMenggunakan ID dari step-step sebelumnya yang tersimpan di collection variable.",
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmpki1wby6j7che1mrwdxi2og"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": null,
+        "contentType": null
+      },
+      "name": "[ALL-IN-ONE] Run Full Registration Flow",
+      "method": "POST",
+      "params": [
+        {
+          "key": "nik_pasien",
+          "value": "9271060312000001",
+          "active": true,
+          "description": ""
+        },
+        {
+          "key": "nik_dokter",
+          "value": "10006926841",
+          "active": true,
+          "description": ""
+        },
+        {
+          "key": "location_name",
+          "value": "Ruang Poli Umum zan12",
+          "active": true,
+          "description": ""
+        }
+      ],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/run-full-flow",
+      "responses": {},
+      "testScript": "",
+      "description": "Menjalankan SELURUH alur pendaftaran pasien dalam satu request.\nBerguna untuk testing end-to-end.\nRespons berisi ringkasan semua ID yang dihasilkan beserta Encounter ID.",
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmpki1wby6j7ehe1mer1h8iqx"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": null,
+        "contentType": null
+      },
+      "name": "Registrations - Lihat Semua Data Registrasi",
+      "method": "GET",
+      "params": [],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/registrations",
+      "responses": {},
+      "testScript": "",
+      "description": null,
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmq0xi9jq2pcqi61mj44w52n7"
+    },
+    {
+      "v": "17",
+      "auth": {
+        "authType": "inherit",
+        "authActive": true
+      },
+      "body": {
+        "body": null,
+        "contentType": null
+      },
+      "name": "Registration Details - Lihat Registrasi by Encounter ID",
+      "method": "GET",
+      "params": [],
+      "headers": [],
+      "endpoint": "<<base_url>>/registration/registrations/c199ffc1-c8c8-4e0d-a197-0afc6d56c6b4",
+      "responses": {},
+      "testScript": "",
+      "description": null,
+      "preRequestScript": "",
+      "requestVariables": [],
+      "id": "cmq0zn8a12zd5ga1mu2uqzun7"
+    }
+  ],
+  "auth": {
+    "authType": "none",
+    "authActive": true
+  },
+  "headers": [],
+  "variables": [],
+  "description": "Koleksi request untuk simulasi pendaftaran pasien ke SATUSEHAT Platform (Sandbox).\n\nJalankan request secara berurutan: Step 1 → 2a → 2b → 3 → 4.\nAtau gunakan 'Run Full Flow' untuk menjalankan semuanya sekaligus.",
+  "preRequestScript": "",
+  "testScript": ""
+}

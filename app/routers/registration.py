@@ -1,14 +1,22 @@
 import logging
 from fastapi import APIRouter, HTTPException, Depends
+from sqlalchemy.orm import Session
 from app.models import (
     TokenResponse, PatientIHSResponse, 
     LocationRequest, LocationResponse, 
     EncounterRequest, EncounterResponse, FullFlowResponse
 )
 from app.services.satusehat_service import SatuSehatService
+from app.services.fhir_builder import build_location_payload, build_encounter_payload
+from app.database import get_db, save_registration, init_db
+from app.config import settings
+from app.services.auth import get_access_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/registration", tags=["Pendaftaran Pasien"])
+
+# Inisialisasi database saat startup
+init_db()
 
 service = SatuSehatService()
 
@@ -25,7 +33,7 @@ async def get_token():
     Mendapatkan OAuth2 access token dari server SATUSEHAT.
     """
     try:
-        return service.get_token()
+        return await service.get_token()
     except HTTPException as e:
         raise e
     except Exception as e:
@@ -36,61 +44,102 @@ async def get_token():
 # ---------------------------------------------------------------------------
 
 @router.get("/patient-ihs", summary="Step 2a: Cari IHS Number Pasien", response_model=PatientIHSResponse)
-async def get_patient_ihs(token: str, nik: str = NIK_PASIEN_DUMMY):
+async def get_patient_ihs(nik: str = NIK_PASIEN_DUMMY):
     """
     Mencari IHS Number pasien berdasarkan NIK.
+    Token diperoleh otomatis.
     """
     try:
-        patient_data = service.get_patient_ihs(token, nik)
+        token = await get_access_token()
+        patient_data = await service.get_patient_ihs(token, nik)
         # Transformasi FHIR Resource ke Simple Model
         return {
-            "ihsNumber": patient_data["id"],
+            "ihs_number": patient_data["id"],
             "nik": nik,
-            "fullName": patient_data.get("name", [{}])[0].get("text", "Unknown")
+            "fullname": patient_data.get("name", [{}])[0].get("text", "Unknown")
         }
     except HTTPException as e:
         raise e
 
 @router.get("/practitioner-ihs", summary="Step 2b: Cari IHS Number Dokter", response_model=PatientIHSResponse)
-async def get_practitioner_ihs(token: str, nik: str):
+async def get_practitioner_ihs(nik: str):
     """
     Mencari IHS Number dokter berdasarkan NIK.
+    Token diperoleh otomatis.
     """
     try:
-        # Menggunakan logic yang sama dengan patient lookup (karena sama-sama Resource FHIR)
-        # Catatan: Di produksi, endpoint-nya mungkin berbeda /Practitioner vs /Patient
-        prac_data = service.get_practitioner_ihs(token, nik)
+        token = await get_access_token()
+        prac_data = await service.get_practitioner_ihs(token, nik)
         return {
-            "ihsNumber": prac_data["id"],
+            "ihs_number": prac_data["id"],
             "nik": nik,
-            "fullName": prac_data.get("name", [{}])[0].get("text", "Unknown")
+            "fullname": prac_data.get("name", [{}])[0].get("text", "Unknown")
         }
     except HTTPException as e:
         raise e
+
+
+@router.get("/practitioner-by-ihs", summary="Step 2b (alt): Cari Dokter by IHS Number")
+async def get_practitioner_by_ihs(ihs_id: str = IHS_DOKTER_DUMMY):
+    """
+    Mencari data dokter langsung berdasarkan IHS Number.
+    Token diperoleh otomatis.
+    """
+    try:
+        token = await get_access_token()
+        prac_data = await service.get_practitioner_by_ihs(token, ihs_id)
+        if prac_data.get("resourceType") != "Practitioner":
+            raise HTTPException(status_code=404, detail="Practitioner tidak ditemukan")
+        name_text = prac_data.get("name", [{}])[0].get("text", "Unknown") if prac_data.get("name") else "Unknown"
+        return {
+            "ihs_number": prac_data["id"],
+            "nik": "-",
+            "fullname": name_text
+        }
+    except HTTPException as e:
+        raise e
+
 
 # ---------------------------------------------------------------------------
 # STEP 3 – POST Location
 # ---------------------------------------------------------------------------
 
 @router.post("/location", summary="Step 3: Buat Resource Location", response_model=LocationResponse)
-async def create_location(token: str, payload: LocationRequest):
+async def create_location(payload: LocationRequest, db: Session = Depends(get_db)):
     """
     Membuat resource Location berdasarkan request body.
+    Token diperoleh otomatis.
+    Data otomatis disimpan ke SQLite (jika nik_pasien disediakan).
     """
-    fhir_payload = {
-        "resourceType": "Location",
-        "active": True,
-        "name": payload.name,
-        "description": payload.description,
-        "category": [c.dict() for c in payload.category]
-    }
+    token = await get_access_token()
+    fhir_payload = build_location_payload(
+        org_id=settings.satusehat_org_id,
+        location_name=payload.location_name,
+    )
     
     try:
-        result = service.create_location(token, fhir_payload)
+        result = await service.create_location(token, fhir_payload)
+        location_id = result["id"]
+        
+        # Simpan ke SQLite jika nik_pasien disediakan
+        if payload.nik_pasien:
+            save_registration(
+                db=db,
+                nik_pasien=payload.nik_pasien,
+                patient_ihs_id=payload.patient_ihs_id or "unknown",
+                patient_name=None,
+                practitioner_ihs_id=payload.practitioner_ihs_id or "unknown",
+                practitioner_name=None,
+                location_id=location_id,
+                location_name=payload.location_name,
+                encounter_id="pending",  # akan diupdate di encounter
+                fhir_response=result
+            )
+        
         return {
-            "id": result["id"],
-            "active": result.get("active", True),
-            "name": result.get("name", payload.name)
+            "id": location_id,
+            "active": True,
+            "name": result.get("name", payload.location_name)
         }
     except HTTPException as e:
         raise e
@@ -100,32 +149,43 @@ async def create_location(token: str, payload: LocationRequest):
 # ---------------------------------------------------------------------------
 
 @router.post("/encounter", summary="Step 4: Daftarkan Kunjungan (Encounter)", response_model=EncounterResponse)
-async def create_encounter(token: str, payload: EncounterRequest):
+async def create_encounter(payload: EncounterRequest, db: Session = Depends(get_db)):
     """
     Mendaftarkan kunjungan pasien ke SATUSEHAT.
+    Token diperoleh otomatis.
+    Data otomatis disimpan ke SQLite.
     """
-    # Sesuai rekomendasi FHIR SATUSEHAT
-    fhir_payload = {
-        "resourceType": "Encounter",
-        "status": "planned",
-        "class": {
-            "system": "http://terminology.hl7.org/CodeSystem/v3-ActClass",
-            "code": payload.encounter_class
-        },
-        "subject": { "reference": f"Patient/{payload.patient_ihs}" },
-        "participant": [{
-            "individual": { "reference": f"Practitioner/{payload.practitioner_ihs}" }
-        }],
-        "location": { "reference": f"Location/{payload.location_id}" },
-        "description": payload.description
-    }
+    token = await get_access_token()
+    # Gunakan builder yang sudah benar
+    fhir_payload = build_encounter_payload(
+        org_id=settings.satusehat_org_id,
+        location_id=payload.location_id,
+        patient_ihs_id=payload.patient_ihs_id,
+        practitioner_ihs_id=payload.practitioner_ihs_id,
+    )
     
     try:
-        result = service.create_encounter(token, fhir_payload)
+        result = await service.create_encounter(token, fhir_payload)
+        encounter_id = result["id"]
+        
+        # Simpan ke SQLite
+        save_registration(
+            db=db,
+            nik_pasien=payload.nik_pasien or "unknown",
+            patient_ihs_id=payload.patient_ihs_id,
+            patient_name=None,
+            practitioner_ihs_id=payload.practitioner_ihs_id,
+            practitioner_name=None,
+            location_id=payload.location_id,
+            location_name=None,
+            encounter_id=encounter_id,
+            fhir_response=result
+        )
+        
         return {
-            "id": result["id"],
-            "status": result.get("status", "planned"),
-            "subject": {"reference": f"Patient/{payload.patient_ihs}"},
+            "id": encounter_id,
+            "status": result.get("status", "arrived"),
+            "subject": {"reference": f"Patient/{payload.patient_ihs_id}"},
             "period": result.get("period", {"start": "Not Set"})
         }
     except HTTPException as e:
@@ -139,44 +199,57 @@ async def create_encounter(token: str, payload: EncounterRequest):
 async def run_full_registration_flow(
     nik_pasien: str = NIK_PASIEN_DUMMY,
     ihs_dokter: str = IHS_DOKTER_DUMMY,
-    location_name: str = "Ruang Poli Umum"
+    location_name: str = "Ruang Poli Umum",
+    db: Session = Depends(get_db)
 ):
     """
     Menjalankan seluruh alur pendaftaran menggunakan service yang sudah ada.
+    Data otomatis disimpan ke SQLite.
     """
     try:
         # 1. Token
-        token_data = service.get_token()
-        token = token_data["access_token"]
+        token = await get_access_token()
         
         # 2a. Patient IHS
-        patient_res = service.get_patient_ihs(token, nik_pasien)
+        patient_res = await service.get_patient_ihs(token, nik_pasien)
         patient_ihs = patient_res["id"]
+        patient_name = patient_res.get("name", [{}])[0].get("text", "Unknown")
         
         # 2b. Practitioner IHS (Directly using IHS Number for flow)
         # Kita asumsikan ihs_dokter adalah IHS Number valid
         practitioner_ihs = ihs_dokter 
         
-        # 3. Location
-        loc_fhir = {
-            "resourceType": "Location",
-            "active": True,
-            "name": location_name,
-            "category": [{"system": "http://terminology.hl7.org/CodeSystem/v3-Role.code", "code": "LOC"}]
-        }
-        loc_res = service.create_location(token, loc_fhir)
+        # 3. Location - gunakan builder yang sudah benar
+        loc_fhir = build_location_payload(
+            org_id=settings.satusehat_org_id,
+            location_name=location_name
+        )
+        loc_res = await service.create_location(token, loc_fhir)
         location_id = loc_res["id"]
         
-        # 4. Encounter
-        enc_fhir = {
-            "resourceType": "Encounter",
-            "status": "planned",
-            "class": {"system": "http://terminology.hl7.org/CodeSystem/v3-ActClass", "code": "AMB"},
-            "subject": {"reference": f"Patient/{patient_ihs}"},
-            "participant": [{"individual": {"reference": f"Practitioner/{practitioner_ihs}"}}],
-            "location": {"reference": f"Location/{location_id}"}
-        }
-        enc_res = service.create_encounter(token, enc_fhir)
+        # 4. Encounter - gunakan builder yang sudah benar
+        enc_fhir = build_encounter_payload(
+            org_id=settings.satusehat_org_id,
+            location_id=location_id,
+            patient_ihs_id=patient_ihs,
+            practitioner_ihs_id=practitioner_ihs,
+        )
+        enc_res = await service.create_encounter(token, enc_fhir)
+        encounter_id = enc_res["id"]
+        
+        # Simpan ke SQLite
+        save_registration(
+            db=db,
+            nik_pasien=nik_pasien,
+            patient_ihs_id=patient_ihs,
+            patient_name=patient_name,
+            practitioner_ihs_id=practitioner_ihs,
+            practitioner_name=None,
+            location_id=location_id,
+            location_name=location_name,
+            encounter_id=encounter_id,
+            fhir_response=enc_res
+        )
         
         return {
             "status": "success",
@@ -184,7 +257,7 @@ async def run_full_registration_flow(
             "data": {
                 "patient_ihs": patient_ihs,
                 "location_id": location_id,
-                "encounter_id": enc_res["id"]
+                "encounter_id": encounter_id
             }
         }
         
@@ -193,3 +266,31 @@ async def run_full_registration_flow(
     except Exception as e:
         logger.error(f"Full flow error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Flow failed: {str(e)}")
+
+
+@router.get("/registrations", summary="Lihat Semua Data Registrasi")
+async def list_registrations(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    Mengambil semua data registrasi yang tersimpan di SQLite.
+    """
+    from app.database import get_all_registrations
+    registrations = get_all_registrations(db, skip, limit)
+    return {
+        "status": "success",
+        "data": [r.to_dict() for r in registrations]
+    }
+
+
+@router.get("/registrations/{encounter_id}", summary="Lihat Registrasi by Encounter ID")
+async def get_registration(encounter_id: str, db: Session = Depends(get_db)):
+    """
+    Mengambil data registrasi berdasarkan Encounter ID.
+    """
+    from app.database import get_registration_by_encounter
+    registration = get_registration_by_encounter(db, encounter_id)
+    if not registration:
+        raise HTTPException(status_code=404, detail="Registrasi tidak ditemukan")
+    return {
+        "status": "success",
+        "data": registration.to_dict()
+    }
