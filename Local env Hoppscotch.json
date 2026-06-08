@@ -1,0 +1,31 @@
+{
+  "id": "cmpkj89jn4iljjn1m1l8rs5r8",
+  "v": 2,
+  "name": "Local",
+  "variables": [
+    {
+      "key": "base_url",
+      "secret": false,
+      "currentValue": "",
+      "initialValue": "http://localhost:8000"
+    },
+    {
+      "key": "patient_ihs_id",
+      "secret": false,
+      "currentValue": "",
+      "initialValue": ""
+    },
+    {
+      "key": "practitioner_ihs_id",
+      "secret": false,
+      "currentValue": "",
+      "initialValue": ""
+    },
+    {
+      "key": "location_id",
+      "secret": false,
+      "currentValue": "",
+      "initialValue": ""
+    }
+  ]
+}
